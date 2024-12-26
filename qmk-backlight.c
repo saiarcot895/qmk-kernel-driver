@@ -89,7 +89,7 @@ static void color_to_hsv(int r, int g, int b,
 static int qmk_set_brightness(struct led_classdev *led_cdev, enum led_brightness brightness)
 {
     __u8 *buf;
-    int ret;
+    int ret = 0;
     int h, s, v;
     struct qmk_priv *priv = container_of(led_cdev, struct qmk_priv, mc_cdev.led_cdev);
 
@@ -111,8 +111,7 @@ static int qmk_set_brightness(struct led_classdev *led_cdev, enum led_brightness
     ret = send_hid_request(priv->hdev, buf, 33);
     if (ret < 0) {
         hid_err(priv->hdev, "Error in setting RGB brightness: %d\n", ret);
-        devm_kfree(&priv->hdev->dev, buf);
-        return ret;
+        goto exit;
     }
 
     buf[1] = 0x07;
@@ -122,8 +121,7 @@ static int qmk_set_brightness(struct led_classdev *led_cdev, enum led_brightness
     ret = send_hid_request(priv->hdev, buf, 33);
     if (ret < 0) {
         hid_err(priv->hdev, "Error in setting RGB effect to solid color: %d\n", ret);
-        devm_kfree(&priv->hdev->dev, buf);
-        return ret;
+        goto exit;
     }
 
     buf[1] = 0x07;
@@ -134,12 +132,12 @@ static int qmk_set_brightness(struct led_classdev *led_cdev, enum led_brightness
     ret = send_hid_request(priv->hdev, buf, 33);
     if (ret < 0) {
         hid_err(priv->hdev, "Error in setting RGB color: %d\n", ret);
-        devm_kfree(&priv->hdev->dev, buf);
-        return ret;
+        goto exit;
     }
 
+exit:
     devm_kfree(&priv->hdev->dev, buf);
-    return 0;
+    return ret;
 }
 
 static int register_qmk_device(struct device *dev)
