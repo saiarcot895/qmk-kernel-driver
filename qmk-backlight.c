@@ -7,9 +7,10 @@
 struct qmk_priv {
     struct led_classdev_mc mc_cdev;
     struct hid_device *hdev;
+    struct list_head list;
 };
 
-static struct qmk_priv *priv;
+static struct list_head qmk_device_list = LIST_HEAD_INIT(qmk_device_list);
 
 static int send_hid_request(struct hid_device *hdev, __u8 *buf, int len)
 {
@@ -140,6 +141,13 @@ exit:
     return ret;
 }
 
+static void remove_qmk_device_from_list(void *data)
+{
+    struct qmk_priv *priv = data;
+    list_del(&priv->list);
+    kfree(priv);
+}
+
 static int register_qmk_device(struct device *dev)
 {
     struct hid_device *hdev = to_hid_device(dev);
@@ -183,18 +191,18 @@ static int register_qmk_device(struct device *dev)
     }
     devm_kfree(dev, buf);
 
-    mc_led_info = devm_kmalloc_array(dev, 3, sizeof(*mc_led_info),
-            GFP_KERNEL | __GFP_ZERO);
-    if (!mc_led_info) {
-        return -ENOMEM;
-    }
-
-    priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+    struct qmk_priv *priv = kzalloc(sizeof(*priv), GFP_KERNEL);
     if (!priv) {
         devm_kfree(dev, mc_led_info);
         return -ENOMEM;
     }
     priv->hdev = hdev;
+
+    mc_led_info = devm_kmalloc_array(dev, 3, sizeof(*mc_led_info),
+            GFP_KERNEL | __GFP_ZERO);
+    if (!mc_led_info) {
+        return -ENOMEM;
+    }
 
     mc_led_info[0].color_index = LED_COLOR_ID_RED;
     mc_led_info[1].color_index = LED_COLOR_ID_GREEN;
@@ -203,33 +211,39 @@ static int register_qmk_device(struct device *dev)
     priv->mc_cdev.subled_info = mc_led_info;
     priv->mc_cdev.num_colors = 3;
     led_cdev = &priv->mc_cdev.led_cdev;
-    led_cdev->name = devm_kasprintf(&hdev->dev, GFP_KERNEL, "%s:backlight",
+    led_cdev->name = devm_kasprintf(dev, GFP_KERNEL, "%s:backlight",
             hdev->name);
     led_cdev->brightness = 255;
     led_cdev->max_brightness = 255;
     led_cdev->brightness_set_blocking = qmk_set_brightness;
 
-    ret = devm_led_classdev_multicolor_register(&hdev->dev, &priv->mc_cdev);
+    ret = devm_led_classdev_multicolor_register(dev, &priv->mc_cdev);
     if (ret < 0) {
         hid_err(hdev, "Cannot register multicolor LED device\n");
-        devm_kfree(dev, priv);
+        kfree(priv);
         devm_kfree(dev, mc_led_info);
         return ret;
     }
+    list_add(&priv->list, &qmk_device_list);
+    devm_add_action(dev, remove_qmk_device_from_list, priv);
     return 0;
 }
 
-static int clean_up_qmk_devices(struct device *dev)
+static int clean_up_qmk_devices(void)
 {
-    if (priv) {
+    struct list_head *item, *tmp;
+    list_for_each_safe (item, tmp, &qmk_device_list) {
+        struct qmk_priv *priv = list_entry(item, struct qmk_priv, list);
+        struct device *dev = &priv->hdev->dev;
         devm_led_classdev_multicolor_unregister(dev, &priv->mc_cdev);
         devm_kfree(dev, priv->mc_cdev.subled_info);
-        devm_kfree(dev, priv);
+        devm_kfree(dev, priv->mc_cdev.led_cdev.name);
+        devm_release_action(dev, remove_qmk_device_from_list, priv);
     }
     return 0;
 }
 
-static int get_qmk_devices(struct device *dev, const void *data)
+static int get_qmk_devices(struct device *dev, void *data)
 {
     struct hid_device *hdev = to_hid_device(dev);
     struct hid_report_enum *report_enum;
@@ -242,18 +256,16 @@ static int get_qmk_devices(struct device *dev, const void *data)
     while (list != &report_enum->report_list) {
         report = (struct hid_report *) list;
         if (!report->field[0]->application) {
+            list = list->next;
             continue;
         }
         unsigned int usage_page = report->field[0]->application >> 16;
         unsigned int usage = report->field[0]->application & 0xFFFF;
         if (usage_page == 0xFF60 && usage == 0x61) {
-            pr_info("Found matching device %x:%x\n", hdev->vendor, hdev->product);
             int ret = handler(dev);
             if (ret < 0) {
-                return ret;
+                hid_err(hdev, "Handler failed for device\n");
             }
-
-            return 0;
         }
         list = list->next;
     }
@@ -262,7 +274,7 @@ static int get_qmk_devices(struct device *dev, const void *data)
 
 int init_module(void) 
 { 
-    bus_find_device(&hid_bus_type, NULL, register_qmk_device, get_qmk_devices);
+    bus_for_each_dev(&hid_bus_type, NULL, register_qmk_device, get_qmk_devices);
 
     /* A non 0 return means init_module failed; module can't be loaded. */ 
     return 0; 
@@ -270,8 +282,7 @@ int init_module(void)
 
 void cleanup_module(void) 
 { 
-    bus_find_device(&hid_bus_type, NULL, clean_up_qmk_devices, get_qmk_devices);
-    pr_info("Goodbye world.\n"); 
+    clean_up_qmk_devices();
 } 
 
 MODULE_LICENSE("GPL");
