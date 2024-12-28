@@ -144,6 +144,9 @@ exit:
 static void remove_qmk_device_from_list(void *data)
 {
     struct qmk_priv *priv = data;
+    led_classdev_multicolor_unregister(&priv->mc_cdev);
+    kfree(priv->mc_cdev.subled_info);
+    kfree(priv->mc_cdev.led_cdev.name);
     list_del(&priv->list);
     kfree(priv);
 }
@@ -198,7 +201,7 @@ static int register_qmk_device(struct device *dev)
     }
     priv->hdev = hdev;
 
-    mc_led_info = devm_kmalloc_array(dev, 3, sizeof(*mc_led_info),
+    mc_led_info = kmalloc_array(3, sizeof(*mc_led_info),
             GFP_KERNEL | __GFP_ZERO);
     if (!mc_led_info) {
         return -ENOMEM;
@@ -211,13 +214,13 @@ static int register_qmk_device(struct device *dev)
     priv->mc_cdev.subled_info = mc_led_info;
     priv->mc_cdev.num_colors = 3;
     led_cdev = &priv->mc_cdev.led_cdev;
-    led_cdev->name = devm_kasprintf(dev, GFP_KERNEL, "%s:backlight",
+    led_cdev->name = kasprintf(GFP_KERNEL, "%s:backlight",
             hdev->name);
     led_cdev->brightness = 255;
     led_cdev->max_brightness = 255;
     led_cdev->brightness_set_blocking = qmk_set_brightness;
 
-    ret = devm_led_classdev_multicolor_register(dev, &priv->mc_cdev);
+    ret = led_classdev_multicolor_register(dev, &priv->mc_cdev);
     if (ret < 0) {
         hid_err(hdev, "Cannot register multicolor LED device\n");
         kfree(priv);
@@ -235,9 +238,6 @@ static int clean_up_qmk_devices(void)
     list_for_each_safe (item, tmp, &qmk_device_list) {
         struct qmk_priv *priv = list_entry(item, struct qmk_priv, list);
         struct device *dev = &priv->hdev->dev;
-        devm_led_classdev_multicolor_unregister(dev, &priv->mc_cdev);
-        devm_kfree(dev, priv->mc_cdev.subled_info);
-        devm_kfree(dev, priv->mc_cdev.led_cdev.name);
         devm_release_action(dev, remove_qmk_device_from_list, priv);
     }
     return 0;
